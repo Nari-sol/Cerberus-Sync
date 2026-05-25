@@ -69,11 +69,84 @@ def load_and_process_data(uploaded_files_data, ad_uploaded_file_data, yahoo_ad_u
             # 拡張子に応じて読み込み処理を分岐し、全シートを結合
             if ad_name.lower().endswith('.xlsx'):
                 sheets_dict = pd.read_excel(io.BytesIO(ad_content), sheet_name=None)
+                sheet_names = list(sheets_dict.keys())
+                
+                # 割引データシートの分離（最初のシート）
+                discount_sheet = sheet_names[0]
+                discount_df = sheets_dict[discount_sheet]
+                
+                # 月と割引金額のマッピングを作成
+                discount_map = {}
+                if len(discount_df.columns) >= 2:
+                    for _, row in discount_df.iterrows():
+                        m_val = str(row.iloc[0]).strip()
+                        m_key = extract_month_from_str(m_val)
+                        try:
+                            amt_str = str(row.iloc[1]).replace(',', '').replace('円', '').replace('¥', '').strip()
+                            amt = float(amt_str) if amt_str else 0.0
+                        except Exception:
+                            amt = 0.0
+                        
+                        discount_map[m_val] = amt
+                        if m_key != "不明":
+                            discount_map[m_key] = amt
+                
+                # 2番目以降のシート（各月の広告データ）をループ処理
                 cleaned_sheets = []
-                for sname, df in sheets_dict.items():
+                for sname in sheet_names[1:]:
+                    df = sheets_dict[sname].copy()
+                    if df.empty:
+                        continue
+                    
                     df.columns = df.columns.astype(str).str.replace(r'[\s　]+', '', regex=True)
+                    
+                    # 割引金額の取得
+                    m_key = extract_month_from_str(sname)
+                    discount_amt = discount_map.get(sname, 0.0)
+                    if discount_amt == 0.0 and m_key != "不明":
+                        discount_amt = discount_map.get(m_key, 0.0)
+                    
+                    # 日付列と広告費列の特定
+                    date_col = None
+                    for col in ["日付", "日", "年月日"]:
+                        if col in df.columns:
+                            date_col = col
+                            break
+                    
+                    cost_col = None
+                    for col in ["実績額(合計)", "割引後実績額", "実績額", "広告費", "利用金額", "利用額"]:
+                        if col in df.columns:
+                            cost_col = col
+                            break
+                    
+                    # 割引額の反映
+                    if date_col:
+                        if pd.api.types.is_numeric_dtype(df[date_col]):
+                            df[date_col] = pd.to_datetime(df[date_col], unit='D', origin='1899-12-30')
+                        else:
+                            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                        df[date_col] = df[date_col].dt.normalize()
+                        
+                        # ユニーク日付数のカウント
+                        unique_dates = df[date_col].dropna().unique()
+                        num_days = len(unique_dates)
+                        
+                        if num_days > 0 and discount_amt > 0.0:
+                            daily_discount = discount_amt / num_days
+                            
+                            if cost_col:
+                                df[cost_col] = pd.to_numeric(
+                                    df[cost_col].astype(str).str.replace(',', '', regex=False).str.replace('円', '', regex=False).str.replace('¥', '', regex=False).str.strip(),
+                                    errors='coerce'
+                                ).fillna(0.0)
+                                df[cost_col] = df[cost_col].apply(lambda val: max(val - daily_discount, 0.0))
+                    
                     cleaned_sheets.append(df)
-                ads_df = pd.concat(cleaned_sheets, ignore_index=True)
+                
+                if cleaned_sheets:
+                    ads_df = pd.concat(cleaned_sheets, ignore_index=True)
+                else:
+                    ads_df = pd.DataFrame()
             else:
                 try:
                     ads_df = pd.read_csv(io.BytesIO(ad_content), encoding='cp932')
@@ -1129,6 +1202,54 @@ if uploaded_files or yahoo_item_uploaded_files:
                             kpi_df.loc[store_name, "広告売上"] = 0.0
                             kpi_df.loc[store_name, "ROAS"] = 0.0
                 
+                # Amazonを含む店舗を抽出
+                amazon_stores = [idx for idx in kpi_df.index if "Amazon" in str(idx)]
+                if len(amazon_stores) >= 2:
+                    # 単純合算する数値を計算
+                    sum_sales = kpi_df.loc[amazon_stores, "売上"].sum()
+                    sum_prev_sales = kpi_df.loc[amazon_stores, "前年売上"].sum()
+                    sum_orders = kpi_df.loc[amazon_stores, "注文数"].sum()
+                    sum_budget = kpi_df.loc[amazon_stores, "月予算"].sum()
+                    sum_ad_cost = kpi_df.loc[amazon_stores, "広告費"].sum()
+                    sum_ad_sales = kpi_df.loc[amazon_stores, "広告売上"].sum()
+                    
+                    # 各指標の再計算（アスタリスク記号は一切禁止）
+                    calc_prev_ratio = 0.0
+                    if sum_prev_sales > 0:
+                        calc_prev_ratio = operator.mul(sum_sales / sum_prev_sales, 100)
+                    
+                    calc_avg_order = 0.0
+                    if sum_orders > 0:
+                        calc_avg_order = sum_sales / sum_orders
+                        
+                    calc_budget_progress = 0.0
+                    if sum_budget > 0:
+                        calc_budget_progress = operator.mul(sum_sales / sum_budget, 100)
+                        
+                    calc_roas = 0.0
+                    if sum_ad_cost > 0:
+                        calc_roas = operator.mul(sum_ad_sales / sum_ad_cost, 100)
+                        
+                    # Amazon合計行を追加
+                    kpi_df.loc["Amazon合計"] = [
+                        sum_sales,
+                        sum_prev_sales,
+                        calc_prev_ratio,
+                        sum_orders,
+                        calc_avg_order,
+                        sum_budget,
+                        calc_budget_progress,
+                        sum_ad_cost,
+                        sum_ad_sales,
+                        calc_roas
+                    ]
+                
+                # 個別のAmazon店舗の月予算と予算進捗を無効化（np.nanを代入）
+                for amz_store in amazon_stores:
+                    if amz_store in kpi_df.index:
+                        kpi_df.loc[amz_store, "月予算"] = np.nan
+                        kpi_df.loc[amz_store, "予算進捗"] = np.nan
+
                 kpi_cols = ["売上", "前年売上", "前年比", "注文数", "客単価", "月予算", "予算進捗", "広告費", "広告売上", "ROAS"]
                 kpi_df = kpi_df[kpi_cols]
                 
