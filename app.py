@@ -1579,6 +1579,63 @@ if uploaded_files or yahoo_item_uploaded_files:
                     
                     st.markdown("---")
                     
+                    # --- 🏆 商品別売上ランキング (Top 30) (Yahoo!セクション内) ---
+                    st.write("#### 🏆 商品別売上ランキング (Top 30)")
+                    st.caption("選択した店舗における「売上合計値（税込）」の上位30商品を表示します。")
+                    
+                    if yahoo_item_df is not None and not yahoo_item_df.empty:
+                        available_item_stores = sorted(list(yahoo_item_df["店舗名"].unique()))
+                        
+                        col_store_sel, col_kw_sel = st.columns(2)
+                        with col_store_sel:
+                            selected_item_store = st.selectbox(
+                                "分析対象の店舗を選択してください",
+                                available_item_stores,
+                                key="item_store_selector"
+                            )
+                        with col_kw_sel:
+                            filter_keyword = st.text_input(
+                                "絞り込みキーワード (任意)",
+                                key="item_filter_keyword"
+                            )
+                        
+                        df_store_all = yahoo_item_df[yahoo_item_df["店舗名"] == selected_item_store]
+                        
+                        df_store = df_store_all
+                        target_month_display = "全期間"
+                        if selected_month:
+                            active_month_val = extract_month_from_str(selected_month)
+                            df_store = df_store_all[df_store_all["対象月"] == active_month_val]
+                            target_month_display = active_month_val
+                        
+                        if df_store.empty:
+                            st.warning(f"⚠️ {selected_item_store} の {target_month_display} の商品データが存在しません。")
+                        else:
+                            if filter_keyword:
+                                import unicodedata
+                                norm_kw = unicodedata.normalize('NFKC', filter_keyword).lower()
+                                name_normalized = df_store["商品名"].astype(str).str.normalize('NFKC').str.lower()
+                                code_normalized = df_store["商品コード"].astype(str).str.normalize('NFKC').str.lower()
+                                df_store = df_store[
+                                    name_normalized.str.contains(norm_kw, na=False) |
+                                    code_normalized.str.contains(norm_kw, na=False)
+                                ]
+                            
+                            df_store_sorted = df_store.sort_values(by="売上合計値（税込）", ascending=False)
+                            df_store_top30 = df_store_sorted.head(30)
+                            
+                            display_cols = ["店舗名", "商品コード", "商品名", "売上合計値（税込）", "注文点数"]
+                            available_display_cols = [c for c in display_cols if c in df_store_top30.columns]
+                            
+                            df_store_top30_display = df_store_top30[available_display_cols].copy()
+                            df_store_top30_display.index = range(1, len(df_store_top30_display) + 1)
+                            
+                            st.dataframe(df_store_top30_display, use_container_width=True)
+                    else:
+                        st.info("ℹ️ 商品データがロードされていないため、商品別売上ランキングを表示できません。")
+                    
+                    st.markdown("---")
+                    
                     # --- 📊 広告費と売上の相関分析 (Amazon) ---
                     st.write("### 📊 広告費と売上の相関分析 (Amazon)")
                     if amazon_ad_df is not None and not amazon_ad_df.empty:
@@ -1716,11 +1773,18 @@ if uploaded_files or yahoo_item_uploaded_files:
                         st.write("#### 🏆 商品別売上ランキング (Top 30)")
                         st.caption("選択した店舗における「売上合計値（税込）」の上位30商品を表示します。")
                         
-                        selected_item_store = st.selectbox(
-                            "分析対象の店舗を選択してください",
-                            available_item_stores,
-                            key="item_store_selector"
-                        )
+                        col_store_sel, col_kw_sel = st.columns(2)
+                        with col_store_sel:
+                            selected_item_store = st.selectbox(
+                                "分析対象の店舗を選択してください",
+                                available_item_stores,
+                                key="item_store_selector_items_tab"
+                            )
+                        with col_kw_sel:
+                            filter_keyword = st.text_input(
+                                "絞り込みキーワード (任意)",
+                                key="item_filter_keyword_items_tab"
+                            )
                         
                         df_store_all = yahoo_item_df[yahoo_item_df["店舗名"] == selected_item_store]
                         df_store = df_store_all[df_store_all["対象月"] == active_month_str]
@@ -1728,6 +1792,16 @@ if uploaded_files or yahoo_item_uploaded_files:
                         if df_store.empty:
                             st.warning(f"⚠️ {selected_item_store} の {active_month_str} の商品データが存在しません。")
                         else:
+                            if filter_keyword:
+                                import unicodedata
+                                norm_kw = unicodedata.normalize('NFKC', filter_keyword).lower()
+                                name_normalized = df_store["商品名"].astype(str).str.normalize('NFKC').str.lower()
+                                code_normalized = df_store["商品コード"].astype(str).str.normalize('NFKC').str.lower()
+                                df_store = df_store[
+                                    name_normalized.str.contains(norm_kw, na=False) |
+                                    code_normalized.str.contains(norm_kw, na=False)
+                                ]
+                            
                             df_store_sorted = df_store.sort_values(by="売上合計値（税込）", ascending=False)
                             df_store_top30 = df_store_sorted.head(30)
                             
